@@ -1,6 +1,7 @@
 /* eslint-disable no-underscore-dangle */
 import prettier from 'prettier';
 import * as t from '@babel/types';
+import { isIdentifier, isTSTypeAnnotation, isTSTypeReference } from '@babel/types';
 import type { CsfFile } from '@storybook/csf-tools';
 import { formatCsf, loadCsf } from '@storybook/csf-tools';
 import { jscodeshiftToPrettierParser } from '../lib/utils';
@@ -89,6 +90,26 @@ const isReactGlobalRenderFn = (csf: CsfFile, storyFn: t.Expression) => {
 const isSimpleCSFStory = (init: t.Expression, annotations: t.ObjectProperty[]) =>
   annotations.length === 0 && t.isArrowFunctionExpression(init) && init.params.length === 0;
 
+function updateTypeTo(id: t.LVal, type: string): t.LVal {
+  if (
+    isIdentifier(id) &&
+    isTSTypeAnnotation(id.typeAnnotation) &&
+    isTSTypeReference(id.typeAnnotation.typeAnnotation) &&
+    isIdentifier(id.typeAnnotation.typeAnnotation.typeName)
+  ) {
+    const { name } = id.typeAnnotation.typeAnnotation.typeName;
+    if (name === 'Story' || name === 'StoryFn' || name === 'ComponentStory') {
+      return {
+        ...id,
+        typeAnnotation: t.tsTypeAnnotation(
+          t.tsTypeReference(t.identifier(type), id.typeAnnotation.typeAnnotation.typeParameters)
+        ),
+      };
+    }
+  }
+  return { ...id };
+}
+
 function transform({ source }: { source: string }, api: any, options: { parser?: string }) {
   const makeTitle = (userTitle?: string) => {
     return userTitle || 'FIXME';
@@ -117,6 +138,9 @@ function transform({ source }: { source: string }, api: any, options: { parser?:
         (!t.isArrowFunctionExpression(init) && !template) ||
         isSimpleCSFStory(init, annotations)
       ) {
+        objectExports[key] = t.exportNamedDeclaration(
+          t.variableDeclaration('const', [t.variableDeclarator(updateTypeTo(id, 'StoryFn'), init)])
+        );
         return;
       }
 
@@ -128,20 +152,16 @@ function transform({ source }: { source: string }, api: any, options: { parser?:
         storyFn = init;
       }
 
-      const keyId = t.identifier(key);
-      // @ts-expect-error (Converted from ts-ignore)
-      const { typeAnnotation } = id;
-      if (typeAnnotation) {
-        keyId.typeAnnotation = typeAnnotation;
-      }
-
       const renderAnnotation = isReactGlobalRenderFn(csf, storyFn)
         ? []
         : [t.objectProperty(t.identifier('render'), storyFn)];
 
       objectExports[key] = t.exportNamedDeclaration(
         t.variableDeclaration('const', [
-          t.variableDeclarator(keyId, t.objectExpression([...renderAnnotation, ...annotations])),
+          t.variableDeclarator(
+            updateTypeTo(id, 'StoryObj'),
+            t.objectExpression([...renderAnnotation, ...annotations])
+          ),
         ])
       );
     }
